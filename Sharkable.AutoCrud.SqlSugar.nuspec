@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>Sharkable.AutoCrud.SqlSugar</id>
-    <version>0.0.23</version>
+    <version>0.3.1</version>
     <title>Sharkable.AutoCrud.SqlSugar</title>
     <authors>charleypeng</authors>
     <readme>docs\README.md</readme>
@@ -11,12 +11,12 @@
     <icon>sharkable.jpg</icon>
     <projectUrl>https://github.com/SharkableIO/Sharkable.AutoCrud.SqlSugar</projectUrl>
     <description>a dotnet minimal api framework collection aimed to support aot</description>
-    <releaseNotes>fix options might be null</releaseNotes>
-    <copyright>CopyRight 2024 Penglei</copyright>
+    <releaseNotes>update to Sharkable v0.3.1 and SqlSugarCore 5.1.4.215</releaseNotes>
+    <copyright>CopyRight 2026 Penglei</copyright>
     <tags>minimalapi aot framework toolkit</tags>
     <dependencies>
-      <dependency id="Sharkable" version="0.0.23" />
-      <dependency id="SqlSugarCore" version="5.1.4.170-preview05" />
+      <dependency id="Sharkable" version="0.3.1" />
+      <dependency id="SqlSugarCore" version="5.1.4.215" />
     </dependencies>
   </metadata>
    <files>
