@@ -2,16 +2,47 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <Description>Sharkable.AutoCrud.SqlSugar — automatic CRUD API generation for SqlSugar-backed entities.</Description>
+    <AssemblyVersion>0.4.0</AssemblyVersion>
+    <Version>0.4.0</Version>
+    <PackageIcon>sharkable.jpg</PackageIcon>
+    <PackageProjectUrl>https://sharkableio.github.io/</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SharkableIO/Sharkable.AutoCrud.SqlSugar</RepositoryUrl>
+    <PackageTags>sharkable,autocrud,sqlsugar,orm,minimalapi</PackageTags>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Copyright>CharleyPeng</Copyright>
+    <Authors>CharleyPeng</Authors>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <NoWarn>$(NoWarn);NU1903</NoWarn>
   </PropertyGroup>
-<ItemGroup>
-	<FrameworkReference Include="Microsoft.AspNetCore.App" />
-</ItemGroup>
+
   <ItemGroup>
-    <PackageReference Include="Sharkable" Version="0.3.1" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <Choose>
+    <When Condition="Exists('$(MSBuildThisFileDirectory)../Sharkable/src/Sharkable/Sharkable.csproj')">
+      <ItemGroup>
+        <ProjectReference Include="$(MSBuildThisFileDirectory)../Sharkable/src/Sharkable/Sharkable.csproj" />
+      </ItemGroup>
+    </When>
+    <Otherwise>
+      <ItemGroup>
+        <PackageReference Include="Sharkable" Version="0.4.0" />
+      </ItemGroup>
+    </Otherwise>
+  </Choose>
+
+  <ItemGroup>
     <PackageReference Include="SqlSugarCore" Version="5.1.4.215" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="" />
+    <None Include="sharkable.jpg" Pack="true" PackagePath="" />
   </ItemGroup>
 
 </Project>
