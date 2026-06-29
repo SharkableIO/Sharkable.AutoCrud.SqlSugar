@@ -25,12 +25,36 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         var tableName = entityType.Name;
         var pkName = GetPrimaryKeyName(entityType);
 
-        if (operations.HasFlag(CrudOperations.List))
+        // GET /{group} — paginated (default) or full dump (ListAll + ?all=true)
+        if (operations.HasFlag(CrudOperations.List) || operations.HasFlag(CrudOperations.ListAll))
         {
-            routes.MapGet("/", async () =>
+            routes.MapGet("/", async (HttpContext ctx) =>
             {
-                var list = await _client.Queryable<object>().AS(tableName).ToListAsync();
-                return Results.Ok(list);
+                // Full dump — only when ListAll is explicitly enabled AND ?all=true
+                if (operations.HasFlag(CrudOperations.ListAll) &&
+                    ctx.Request.Query["all"] == "true")
+                {
+                    var all = await _client.Queryable<object>().AS(tableName).ToListAsync();
+                    return Results.Ok(all);
+                }
+
+                // Safe paginated list (default)
+                var page = int.TryParse(ctx.Request.Query["page"], out var p) && p > 0 ? p : 1;
+                var pageSize = int.TryParse(ctx.Request.Query["pageSize"], out var s) && s > 0
+                    ? Math.Min(s, 100) : 20;
+
+                var total = await _client.Queryable<object>().AS(tableName).CountAsync();
+                var items = await _client.Queryable<object>().AS(tableName)
+                    .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+                return Results.Ok(new
+                {
+                    items,
+                    total,
+                    page,
+                    pageSize,
+                    totalPages = (int)Math.Ceiling((double)total / pageSize),
+                });
             });
         }
 
