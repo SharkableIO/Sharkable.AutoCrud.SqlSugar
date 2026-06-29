@@ -41,30 +41,18 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         var validFields = new HashSet<string>(entityType.GetProperties().Select(p => p.Name),
             StringComparer.OrdinalIgnoreCase);
 
-        // GET /{group} — paginated (default) or full dump (ListAll + ?all=true)
-        if (operations.HasFlag(CrudOperations.List) || operations.HasFlag(CrudOperations.ListAll))
+        // GET / — paginated list
+        if (operations.HasFlag(CrudOperations.List))
         {
             routes.MapGet("/", async (HttpContext ctx) =>
             {
-                // Full dump — only when ListAll is explicitly enabled AND ?all=true
-                if (operations.HasFlag(CrudOperations.ListAll) &&
-                    ctx.Request.Query["all"] == "true")
-                {
-                    var all = await _client.Queryable<object>().AS(tableName)
-                        .With(SqlWith.NoLock).ToListAsync();
-                    return Results.Ok(all);
-                }
-
                 var page = int.TryParse(ctx.Request.Query["page"], out var p) && p > 0 ? p : 1;
                 var pageSize = int.TryParse(ctx.Request.Query["pageSize"], out var s) && s > 0
                     ? Math.Min(s, 100) : 20;
 
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
-
-                // Parse filter[field]=value and filter[field][op]=value
                 query = ApplyFilters(query, ctx.Request.Query, validFields);
 
-                // Parse sort=field or sort=-field,+field2
                 var sortRaw = ctx.Request.Query["sort"].ToString();
                 if (!string.IsNullOrWhiteSpace(sortRaw))
                     query = ApplySort(query, sortRaw, validFields);
@@ -80,6 +68,17 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                     pageSize,
                     totalPages = (int)Math.Ceiling((double)total / pageSize),
                 });
+            });
+        }
+
+        // GET /all — full-table dump (only when ListAll is explicitly enabled)
+        if (operations.HasFlag(CrudOperations.ListAll))
+        {
+            routes.MapGet("/all", async () =>
+            {
+                var all = await _client.Queryable<object>().AS(tableName)
+                    .With(SqlWith.NoLock).ToListAsync();
+                return Results.Ok(all);
             });
         }
 
