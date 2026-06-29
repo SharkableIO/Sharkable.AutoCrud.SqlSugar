@@ -34,7 +34,8 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 if (operations.HasFlag(CrudOperations.ListAll) &&
                     ctx.Request.Query["all"] == "true")
                 {
-                    var all = await _client.Queryable<object>().AS(tableName).ToListAsync();
+                    var all = await _client.Queryable<object>().AS(tableName)
+                        .With(SqlWith.NoLock).ToListAsync();
                     return Results.Ok(all);
                 }
 
@@ -45,6 +46,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
                 var total = await _client.Queryable<object>().AS(tableName).CountAsync();
                 var items = await _client.Queryable<object>().AS(tableName)
+                    .With(SqlWith.NoLock)
                     .Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
 
                 return Results.Ok(new
@@ -64,6 +66,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             {
                 var pk = ConvertKey(id, entityType, pkName);
                 var entity = await _client.Queryable<object>().AS(tableName)
+                    .With(SqlWith.NoLock)
                     .Where($"{pkName} = @id", new { id = pk }).FirstAsync();
                 return entity != null ? Results.Ok(entity) : Results.NotFound();
             });
