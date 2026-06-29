@@ -38,6 +38,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
         var tableName = entityType.Name;
         var pkName = GetPrimaryKeyName(entityType);
+        var isSoftDeletable = entityType.GetInterfaces().Any(i => i.Name == "ISoftDeletable");
         var validFields = new HashSet<string>(entityType.GetProperties().Select(p => p.Name),
             StringComparer.OrdinalIgnoreCase);
 
@@ -51,6 +52,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                     ? Math.Min(s, 100) : 20;
 
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
+                query = ApplySoftDeleteFilter(query, isSoftDeletable);
                 query = ApplyFilters(query, ctx.Request.Query, validFields);
 
                 var sortRaw = ctx.Request.Query["sort"].ToString();
@@ -76,8 +78,9 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         {
             routes.MapGet("/all", async () =>
             {
-                var all = await _client.Queryable<object>().AS(tableName)
-                    .With(SqlWith.NoLock).ToListAsync();
+                var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
+                query = ApplySoftDeleteFilter(query, isSoftDeletable);
+                var all = await query.ToListAsync();
                 return Results.Ok(all);
             });
         }
@@ -87,9 +90,9 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             routes.MapGet($"{{{pkName}}}", async (string id) =>
             {
                 var pk = ConvertKey(id, entityType, pkName);
-                var entity = await _client.Queryable<object>().AS(tableName)
-                    .With(SqlWith.NoLock)
-                    .Where($"{pkName} = @id", new { id = pk }).FirstAsync();
+                var q = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
+                q = ApplySoftDeleteFilter(q, isSoftDeletable);
+                var entity = await q.Where($"{pkName} = @id", new { id = pk }).FirstAsync();
                 return entity != null ? Results.Ok(entity) : Results.NotFound();
             });
         }
@@ -124,8 +127,17 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             routes.MapDelete($"{{{pkName}}}", async (string id) =>
             {
                 var pk = ConvertKey(id, entityType, pkName);
-                await _client.Deleteable<object>().AS(tableName)
-                    .Where($"{pkName} = @id", new { id = pk }).ExecuteCommandAsync();
+                if (isSoftDeletable)
+                {
+                    await _client.Ado.ExecuteCommandAsync(
+                        $"UPDATE {tableName} SET IsDeleted = 1 WHERE {pkName} = @id",
+                        new { id = pk });
+                }
+                else
+                {
+                    await _client.Deleteable<object>().AS(tableName)
+                        .Where($"{pkName} = @id", new { id = pk }).ExecuteCommandAsync();
+                }
                 return Results.Ok();
             });
         }
@@ -224,6 +236,14 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 : query.OrderBy($"{field} ASC");
         }
         return query;
+    }
+
+    private static ISugarQueryable<object> ApplySoftDeleteFilter(
+        ISugarQueryable<object> query, bool isSoftDeletable)
+    {
+        return isSoftDeletable
+            ? query.Where("IsDeleted = 0")
+            : query;
     }
 
     private static string? GetPrimaryKeyName(Type entityType)
