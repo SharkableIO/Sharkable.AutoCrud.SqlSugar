@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Options;
 using SqlSugar;
 
 namespace Sharkable.AutoCrud.SqlSugar;
@@ -10,6 +11,7 @@ namespace Sharkable.AutoCrud.SqlSugar;
 public sealed class AutoCrudGenerator : IAutoCrudGenerator
 {
     private readonly ISqlSugarClient _client;
+    private readonly SqlSugarOptions _options;
 
     private static readonly Dictionary<string, FilterOperator> OperatorMap = new()
     {
@@ -26,8 +28,15 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     };
 
     public AutoCrudGenerator(ISqlSugarClient client)
+        : this(client, new SqlSugarOptions()) { }
+
+    public AutoCrudGenerator(ISqlSugarClient client, IOptions<SqlSugarOptions> options)
+        : this(client, options.Value) { }
+
+    private AutoCrudGenerator(ISqlSugarClient client, SqlSugarOptions options)
     {
         _client = client;
+        _options = options;
     }
 
     public void GenerateRoutes(IEndpointRouteBuilder routes, Type entityType,
@@ -49,7 +58,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             {
                 var page = int.TryParse(ctx.Request.Query["page"], out var p) && p > 0 ? p : 1;
                 var pageSize = int.TryParse(ctx.Request.Query["pageSize"], out var s) && s > 0
-                    ? Math.Min(s, 100) : 20;
+                    ? Math.Min(s, _options.MaxPageSize) : _options.DefaultPageSize;
 
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 query = ApplySoftDeleteFilter(query, isSoftDeletable);
@@ -130,7 +139,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 if (isSoftDeletable)
                 {
                     await _client.Ado.ExecuteCommandAsync(
-                        $"UPDATE {tableName} SET IsDeleted = 1 WHERE {pkName} = @id",
+                        $"UPDATE {tableName} SET {_options.SoftDeleteFieldName} = 1 WHERE {pkName} = @id",
                         new { id = pk });
                 }
                 else
@@ -238,11 +247,11 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         return query;
     }
 
-    private static ISugarQueryable<object> ApplySoftDeleteFilter(
+    private ISugarQueryable<object> ApplySoftDeleteFilter(
         ISugarQueryable<object> query, bool isSoftDeletable)
     {
         return isSoftDeletable
-            ? query.Where("IsDeleted = 0")
+            ? query.Where($"{_options.SoftDeleteFieldName} = 0")
             : query;
     }
 
