@@ -13,6 +13,8 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     private readonly ISqlSugarClient _client;
     private readonly SqlSugarOptions _options;
 
+    private const string DefaultSoftDeleteField = "IsDeleted";
+
     private static readonly Dictionary<string, FilterOperator> OperatorMap = new()
     {
         ["eq"] = FilterOperator.Eq,
@@ -38,6 +40,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         _client = client;
         _options = options;
     }
+
+    private string SafeSoftDeleteField => IsValidFieldName(_options.SoftDeleteFieldName)
+        ? _options.SoftDeleteFieldName!
+        : DefaultSoftDeleteField;
+
+    private static bool IsValidFieldName(string? name)
+        => !string.IsNullOrEmpty(name) && name.All(c => char.IsLetterOrDigit(c) || c == '_');
 
     public void GenerateRoutes(IEndpointRouteBuilder routes, Type entityType,
         Type endpointType, CrudOperations operations)
@@ -139,7 +148,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 if (isSoftDeletable)
                 {
                     await _client.Ado.ExecuteCommandAsync(
-                        $"UPDATE {tableName} SET {_options.SoftDeleteFieldName} = 1 WHERE {pkName} = @id",
+                        $"UPDATE {tableName} SET {SafeSoftDeleteField} = 1 WHERE {pkName} = @id",
                         new { id = pk });
                 }
                 else
@@ -251,7 +260,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         ISugarQueryable<object> query, bool isSoftDeletable)
     {
         return isSoftDeletable
-            ? query.Where($"{_options.SoftDeleteFieldName} = 0")
+            ? query.Where($"{SafeSoftDeleteField} = 0")
             : query;
     }
 
