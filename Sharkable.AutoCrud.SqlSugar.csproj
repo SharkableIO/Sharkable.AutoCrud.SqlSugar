@@ -17,7 +17,7 @@
     <Nullable>enable</Nullable>
     <NoWarn>$(NoWarn);NU1903</NoWarn>
     <NuspecFile>Sharkable.AutoCrud.SqlSugar.nuspec</NuspecFile>
-    <NuspecProperties>version=0.5.0</NuspecProperties>
+    <NuspecProperties>version=0.5.3</NuspecProperties>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
