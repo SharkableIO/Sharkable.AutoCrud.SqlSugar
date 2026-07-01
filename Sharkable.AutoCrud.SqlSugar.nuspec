@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>Sharkable.AutoCrud.SqlSugar</id>
-    <version>0.5.3</version>
+    <version>0.5.4</version>
     <title>Sharkable.AutoCrud.SqlSugar</title>
     <authors>charleypeng</authors>
     <readme>docs\README.md</readme>
@@ -15,7 +15,7 @@
     <copyright>CopyRight 2026 Penglei</copyright>
     <tags>sharkable autocrud sqlsugar orm minimalapi</tags>
     <dependencies>
-      <dependency id="Sharkable" version="0.5.3" />
+      <dependency id="Sharkable" version="0.5.4" />
       <dependency id="SqlSugarCore" version="5.1.4.215" />
     </dependencies>
   </metadata>
