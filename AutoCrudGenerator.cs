@@ -62,13 +62,21 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         var validFields = new HashSet<string>(entityType.GetProperties().Select(p => p.Name),
             StringComparer.OrdinalIgnoreCase);
 
-        // SHARK-SEC-006: explicit field allow-list for mass-assignment defense.
-        // Only properties carrying [CrudAllow] are written from the JSON body; the
-        // primary key is excluded (URL-bound on PUT, DB-generated on POST), and the
-        // soft-delete column is excluded even if marked [CrudAllow] so attackers
-        // cannot revive soft-deleted rows by sending `IsDeleted = false`.
+        // SHARK-SEC-006 + SHARK-SEC-024: explicit field allow-list for mass-assignment
+        // defense. Only properties carrying [CrudAllow] are written from the JSON
+        // body; the primary key is excluded (URL-bound on PUT, DB-generated on
+        // POST), and the soft-delete column is excluded even if marked [CrudAllow]
+        // so attackers cannot revive soft-deleted rows by sending `IsDeleted = false`.
+        //
+        // Defense-in-depth (SHARK-SEC-024): GetCrudAllowedColumns excludes the
+        // soft-delete column by BOTH the resolved PropertyInfo (attribute / column-
+        // rename aware, layer 1) AND a case-insensitive name match against the
+        // configured SafeSoftDeleteField (layer 2). The second layer guarantees the
+        // column is excluded even if layer-1 resolution somehow misses (e.g. an
+        // entity without [SugarColumn] rename where the C# property happens to be
+        // named the same as the configured SoftDeleteFieldName).
         var softDeleteProp = GetSoftDeleteProperty(entityType);
-        var allowedWriteColumns = GetCrudAllowedColumns(entityType, pkName, softDeleteProp);
+        var allowedWriteColumns = GetCrudAllowedColumns(entityType, pkName, softDeleteProp, SafeSoftDeleteField);
         var ignoredWriteColumns = GetIgnoredWriteColumns(entityType, pkName, allowedWriteColumns);
 
         if ((operations.HasFlag(CrudOperations.Create) || operations.HasFlag(CrudOperations.Update))
@@ -388,8 +396,17 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     /// <see cref="CrudAllowAttribute"/>, so an attacker cannot revive soft-deleted records by
     /// sending <c>IsDeleted = false</c> in the PUT body.
     /// </param>
+    /// <param name="safeSoftDeleteField">
+    /// The validated <see cref="SqlSugarOptions.SoftDeleteFieldName"/> (default
+    /// <c>"IsDeleted"</c>). Defense-in-depth (SHARK-SEC-024): any property whose name
+    /// matches this value case-insensitively is also excluded. This second layer
+    /// protects against an attacker reviving a soft-deleted row via a property name
+    /// that slipped past the <paramref name="softDeleteProp"/> resolution (e.g. an
+    /// entity whose C# property name exactly equals the configured soft-delete field
+    /// but is missing a <c>[SugarColumn]</c> rename the resolver looks for).
+    /// </param>
     private static string[] GetCrudAllowedColumns(
-        Type entityType, string? pkName, PropertyInfo? softDeleteProp)
+        Type entityType, string? pkName, PropertyInfo? softDeleteProp, string safeSoftDeleteField)
     {
         var allowed = new List<string>();
         foreach (var prop in entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
@@ -398,6 +415,8 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 continue;
             if (softDeleteProp != null &&
                 string.Equals(prop.Name, softDeleteProp.Name, StringComparison.Ordinal))
+                continue;
+            if (string.Equals(prop.Name, safeSoftDeleteField, StringComparison.OrdinalIgnoreCase))
                 continue;
             if (prop.GetCustomAttribute<CrudAllowAttribute>(inherit: true) != null)
                 allowed.Add(prop.Name);
