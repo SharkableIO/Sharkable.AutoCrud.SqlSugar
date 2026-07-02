@@ -109,6 +109,17 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var pageSize = int.TryParse(ctx.Request.Query["pageSize"], out var s) && s > 0
                     ? Math.Min(s, _options.MaxPageSize) : _options.DefaultPageSize;
 
+                // SHARK-SEC-025: bound `page` to prevent pagination DoS.
+                // (page - 1) * pageSize can overflow int.MaxValue with large page,
+                // which then surfaces as a DB-side arithmetic error or, on some
+                // drivers, an unexpectedly huge negative OFFSET that scans the
+                // full table before discarding rows.
+                var maxPage = AutoCrudSqlSugar.MaxPageNumber;
+                if (page > maxPage)
+                    return Results.BadRequest($"page must be <= {maxPage}.");
+                if (pageSize > 0 && (long)(page - 1) * pageSize > int.MaxValue)
+                    return Results.BadRequest("(page - 1) * pageSize overflows int.MaxValue.");
+
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 query = ApplySoftDeleteFilter(query, isSoftDeletable);
                 query = ApplyFilters(query, ctx.Request.Query, validFields);

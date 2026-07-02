@@ -20,4 +20,17 @@ public partial class AutoCrudSqlSugar
     /// </para>
     /// </summary>
     public static bool AutoCrudRequireAuthorization { get; set; } = false;
+
+    /// <summary>
+    /// Maximum allowed <c>page</c> query parameter for AutoCrud list endpoints.
+    /// Requests with <c>page &gt; MaxPageNumber</c> receive HTTP 400. The list
+    /// handler also rejects requests where <c>(page - 1) * pageSize</c> would
+    /// overflow <see cref="int.MaxValue"/>.
+    /// <para>
+    /// Default: <c>1_000_000</c>. Bounds the worst-case <c>Skip</c> cost so a
+    /// single attacker cannot force the DB to scan and discard an unbounded
+    /// number of rows (pagination DoS, SHARK-SEC-025).
+    /// </para>
+    /// </summary>
+    public static int MaxPageNumber { get; set; } = 1_000_000;
 }
