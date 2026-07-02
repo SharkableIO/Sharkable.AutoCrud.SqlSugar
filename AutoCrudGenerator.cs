@@ -1,3 +1,4 @@
+using System.Reflection;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using SqlSugar;
@@ -59,6 +60,22 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         var isSoftDeletable = entityType.GetInterfaces().Any(i => i.Name == "ISoftDeletable");
         var validFields = new HashSet<string>(entityType.GetProperties().Select(p => p.Name),
             StringComparer.OrdinalIgnoreCase);
+
+        // SHARK-SEC-006: explicit field allow-list for mass-assignment defense.
+        // Only properties carrying [CrudAllow] are written from the JSON body; the
+        // primary key is excluded (URL-bound on PUT, DB-generated on POST).
+        var allowedWriteColumns = GetCrudAllowedColumns(entityType, pkName);
+        var ignoredWriteColumns = GetIgnoredWriteColumns(entityType, pkName, allowedWriteColumns);
+
+        if ((operations.HasFlag(CrudOperations.Create) || operations.HasFlag(CrudOperations.Update))
+            && allowedWriteColumns.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"AutoCrud entity '{entityType.FullName}' has no [CrudAllow] properties. " +
+                $"Mark at least one non-primary-key property with [CrudAllow] before enabling " +
+                $"Create/Update operations. This prevents a silent mass-assignment rejection " +
+                $"endpoint (SHARK-SEC-006).");
+        }
 
         // GET / — paginated list
         if (operations.HasFlag(CrudOperations.List))
@@ -122,7 +139,9 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var body = await ctx.Request.ReadFromJsonAsync(entityType);
                 if (body == null)
                     return Results.BadRequest("Request body is required.");
-                await _client.InsertableByObject(body).ExecuteCommandAsync();
+                await _client.InsertableByObject(body)
+                    .IgnoreColumns(ignoredWriteColumns)
+                    .ExecuteCommandAsync();
                 return Results.Ok(body);
             });
         }
@@ -135,7 +154,9 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 if (body == null)
                     return Results.BadRequest("Request body is required.");
                 SetPrimaryKey(body, pkName, ConvertKey(id, entityType, pkName));
-                await _client.UpdateableByObject(body).ExecuteCommandAsync();
+                await _client.UpdateableByObject(body)
+                    .UpdateColumns(allowedWriteColumns)
+                    .ExecuteCommandAsync();
                 return Results.Ok(body);
             });
         }
@@ -287,5 +308,48 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     private static void SetPrimaryKey(object entity, string pkName, object value)
     {
         entity.GetType().GetProperty(pkName)?.SetValue(entity, value);
+    }
+
+    /// <summary>
+    /// Returns the C# property names of columns decorated with <see cref="CrudAllowAttribute"/>,
+    /// excluding the primary key. Used as the explicit allow-list for SqlSugar's
+    /// <c>UpdateColumns(...)</c> call on the PUT path (SHARK-SEC-006).
+    /// </summary>
+    private static string[] GetCrudAllowedColumns(Type entityType, string? pkName)
+    {
+        var allowed = new List<string>();
+        foreach (var prop in entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (pkName != null && string.Equals(prop.Name, pkName, StringComparison.Ordinal))
+                continue;
+            if (prop.GetCustomAttribute<CrudAllowAttribute>(inherit: true) != null)
+                allowed.Add(prop.Name);
+        }
+        return allowed.ToArray();
+    }
+
+    /// <summary>
+    /// Returns the column names that must be excluded from <c>InsertableByObject</c>'s write
+    /// path. This is the complement of <see cref="GetCrudAllowedColumns"/> against the entity's
+    /// mapped properties (the primary key is always ignored — the DB auto-generates it).
+    /// Used as the explicit ignore-list for SqlSugar's <c>IgnoreColumns(...)</c> call on the
+    /// POST path (SHARK-SEC-006).
+    /// </summary>
+    private static string[] GetIgnoredWriteColumns(Type entityType, string? pkName,
+        IReadOnlyCollection<string> allowedColumns)
+    {
+        var allowedSet = new HashSet<string>(allowedColumns, StringComparer.Ordinal);
+        var ignored = new List<string>();
+        foreach (var prop in entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (pkName != null && string.Equals(prop.Name, pkName, StringComparison.Ordinal))
+            {
+                ignored.Add(prop.Name);
+                continue;
+            }
+            if (!allowedSet.Contains(prop.Name))
+                ignored.Add(prop.Name);
+        }
+        return ignored.ToArray();
     }
 }
