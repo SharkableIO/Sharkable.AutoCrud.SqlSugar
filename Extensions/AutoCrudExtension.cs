@@ -12,17 +12,31 @@ public static class AutoCrudExtension
     /// Registers SqlSugar client, the <see cref="IAutoCrudGenerator"/>,
     /// and a database health check. Call before <c>AddShark()</c>.
     /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="setupOption">
+    /// Configuration delegate. Required: a null delegate silently skips
+    /// registration, leaving no <see cref="ISqlSugarClient"/> /
+    /// <see cref="IAutoCrudGenerator"/> available to the route generator.
+    /// SHARK-SEC-M003 throws <see cref="InvalidOperationException"/> instead so
+    /// misconfigured setups fail loud at startup rather than producing a
+    /// silently-empty AutoCrud surface.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when <paramref name="setupOption"/> is <c>null</c>.
+    /// </exception>
     public static IServiceCollection AddSqlSugar(this IServiceCollection services, Action<SqlSugarOptions>? setupOption = null)
     {
         if (setupOption == null)
-            return services;
+            throw new InvalidOperationException(
+                "AddSqlSugar requires a configuration delegate; pass `opt => { opt.ConnectionString = \"...\"; }` " +
+                "(SHARK-SEC-M003).");
 
         var option = new SqlSugarOptions();
         services.Configure<SqlSugarOptions>(opt =>
         {
-            setupOption?.Invoke(opt);
+            setupOption.Invoke(opt);
         });
-        setupOption?.Invoke(option);
+        setupOption.Invoke(option);
         StaticConfig.EnableAot = Shark.SharkOption.AotMode;
 
         // SHARK-SEC-023: log a startup warning when generated CRUD endpoints will
