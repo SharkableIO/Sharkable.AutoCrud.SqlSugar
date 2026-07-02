@@ -39,6 +39,12 @@ public static class AutoCrudExtension
         setupOption.Invoke(option);
         StaticConfig.EnableAot = Shark.SharkOption.AotMode;
 
+        // SHARK-SEC-M004: build the temporary service provider once and dispose
+        // it via `using` to avoid the captive-dependency anti-pattern. The
+        // prior code called `services.BuildServiceProvider()` twice without
+        // disposal, leaking singleton finalizers and risking stale-state reads.
+        using var tempProvider = services.BuildServiceProvider();
+
         // SHARK-SEC-023: log a startup warning when generated CRUD endpoints will
         // ship anonymous. Default false preserves backward compat, but production
         // deployments MUST set AutoCrudSqlSugar.AutoCrudRequireAuthorization = true
@@ -48,15 +54,14 @@ public static class AutoCrudExtension
         // explicitly opted in.
         if (!AutoCrudSqlSugar.AutoCrudRequireAuthorization && !Shark.SharkOption.AotMode)
         {
-            var logger = services.BuildServiceProvider().GetService<ILoggerFactory>()
+            var logger = tempProvider.GetService<ILoggerFactory>()
                 ?.CreateLogger("Sharkable.AutoCrud.SqlSugar.AddSqlSugar");
             logger?.LogWarning(
                 "AutoCrudSqlSugar.AutoCrudRequireAuthorization is false — generated CRUD endpoints will be anonymous. " +
                 "Set AutoCrudSqlSugar.AutoCrudRequireAuthorization = true before deploying to production (SHARK-SEC-023).");
         }
 
-        var provider = services.BuildServiceProvider();
-        var beforeCfg = provider.GetService<IOptions<ConnectionConfig>>()?.Value;
+        var beforeCfg = tempProvider.GetService<IOptions<ConnectionConfig>>()?.Value;
 
         ConnectionConfig conf;
         if (beforeCfg != null && beforeCfg.ConnectionString != null)
