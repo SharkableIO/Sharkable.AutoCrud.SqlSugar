@@ -2,7 +2,7 @@
 <package >
   <metadata>
     <id>Sharkable.AutoCrud.SqlSugar</id>
-    <version>0.6.0</version>
+    <version>0.5.5</version>
     <title>Sharkable.AutoCrud.SqlSugar</title>
     <authors>charleypeng</authors>
     <readme>docs\README.md</readme>

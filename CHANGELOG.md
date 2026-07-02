@@ -2,7 +2,7 @@
 
 All notable changes to Sharkable.AutoCrud.SqlSugar are documented here.
 
-## [Unreleased]
+## [0.5.5] — 2026-07-03
 
 ### security
 

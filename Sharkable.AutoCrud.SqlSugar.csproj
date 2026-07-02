@@ -2,8 +2,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Description>Sharkable.AutoCrud.SqlSugar — automatic CRUD API generation for SqlSugar-backed entities.</Description>
-    <AssemblyVersion>0.6.0</AssemblyVersion>
-    <Version>0.6.0</Version>
+    <AssemblyVersion>0.5.5</AssemblyVersion>
+    <Version>0.5.5</Version>
     <PackageIcon>sharkable.jpg</PackageIcon>
     <PackageProjectUrl>https://sharkableio.github.io/</PackageProjectUrl>
     <RepositoryUrl>https://github.com/SharkableIO/Sharkable.AutoCrud.SqlSugar</RepositoryUrl>
@@ -17,7 +17,7 @@
     <Nullable>enable</Nullable>
     <NoWarn>$(NoWarn);NU1903</NoWarn>
     <NuspecFile>Sharkable.AutoCrud.SqlSugar.nuspec</NuspecFile>
-    <NuspecProperties>version=0.6.0</NuspecProperties>
+    <NuspecProperties>version=0.5.5</NuspecProperties>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
