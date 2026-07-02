@@ -33,4 +33,28 @@ public partial class AutoCrudSqlSugar
     /// </para>
     /// </summary>
     public static int MaxPageNumber { get; set; } = 1_000_000;
+
+    /// <summary>
+    /// Maximum length, in characters, of any single <c>filter[...]</c> value
+    /// supplied to AutoCrud list endpoints. Requests with a longer value
+    /// receive HTTP 400 (SHARK-SEC-027).
+    /// <para>
+    /// Default: <c>200</c>. Bounds the cost of substring / <c>LIKE</c> scans
+    /// against large text columns and prevents an attacker from forcing the
+    /// DB to scan huge in-memory strings.
+    /// </para>
+    /// </summary>
+    public static int MaxFilterValueLength { get; set; } = 200;
+
+    /// <summary>
+    /// Maximum number of comma-separated items accepted in an <c>in</c> or
+    /// <c>nin</c> filter. Requests with more items receive HTTP 400
+    /// (SHARK-SEC-027).
+    /// <para>
+    /// Default: <c>100</c>. Bounds the cost of expanding the <c>IN</c>
+    /// clause into N placeholders and the resulting DB query-plan / execution
+    /// cost.
+    /// </para>
+    /// </summary>
+    public static int MaxInArraySize { get; set; } = 100;
 }

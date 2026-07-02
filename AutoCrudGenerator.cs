@@ -122,7 +122,9 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 query = ApplySoftDeleteFilter(query, isSoftDeletable);
-                query = ApplyFilters(query, ctx.Request.Query, validFields);
+                var (q, filterError) = ApplyFilters(query, ctx.Request.Query, validFields);
+                if (filterError != null) return Results.BadRequest(filterError);
+                query = q;
 
                 var sortRaw = ctx.Request.Query["sort"].ToString();
                 if (!string.IsNullOrWhiteSpace(sortRaw))
@@ -225,12 +227,14 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         }
     }
 
-    private static ISugarQueryable<object> ApplyFilters(
+    private static (ISugarQueryable<object> Query, string? Error) ApplyFilters(
         ISugarQueryable<object> query,
         IQueryCollection queryParams,
         HashSet<string> validFields)
     {
         var filterMap = new Dictionary<string, List<(FilterOperator Op, string Value)>>();
+        var maxLen = AutoCrudSqlSugar.MaxFilterValueLength;
+        var maxIn = AutoCrudSqlSugar.MaxInArraySize;
 
         foreach (var kv in queryParams)
         {
@@ -242,8 +246,12 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             if (key.StartsWith("filter[") && key.EndsWith("]") && !key.Contains("]["))
             {
                 var field = key[7..^1];
-                if (validFields.Contains(field))
-                    AddFilter(filterMap, field, FilterOperator.Eq, kv.Value.ToString());
+                if (!validFields.Contains(field)) continue;
+                var value = kv.Value.ToString();
+                // SHARK-SEC-027: bound per-value length.
+                if (value.Length > maxLen)
+                    return (query, $"filter[{field}] value length {value.Length} exceeds MaxFilterValueLength ({maxLen}).");
+                AddFilter(filterMap, field, FilterOperator.Eq, value);
             }
             // filter[field][op] = value
             else if (key.StartsWith("filter[") && key.Contains("]["))
@@ -254,8 +262,12 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var opEnd = key.Length - 1;
                 var opStr = key[opStart..opEnd];
 
-                if (validFields.Contains(field) && OperatorMap.TryGetValue(opStr, out var op))
-                    AddFilter(filterMap, field, op, kv.Value.ToString());
+                if (!validFields.Contains(field) || !OperatorMap.TryGetValue(opStr, out var op)) continue;
+                var value = kv.Value.ToString();
+                // SHARK-SEC-027: bound per-value length.
+                if (value.Length > maxLen)
+                    return (query, $"filter[{field}][{opStr}] value length {value.Length} exceeds MaxFilterValueLength ({maxLen}).");
+                AddFilter(filterMap, field, op, value);
             }
         }
 
@@ -263,11 +275,20 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         {
             foreach (var (op, value) in conditions)
             {
+                // SHARK-SEC-027: bound IN / NOT IN array size. Re-check at apply
+                // time so the cap holds even if multiple values target the same
+                // field (the per-key check above doesn't catch aggregate size).
+                if (op is FilterOperator.In or FilterOperator.Nin)
+                {
+                    var parts = value.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length > maxIn)
+                        return (query, $"filter[{field}][{op}] array size {parts.Length} exceeds MaxInArraySize ({maxIn}).");
+                }
                 query = ApplyOperator(query, field, op, value);
             }
         }
 
-        return query;
+        return (query, null);
     }
 
     private static void AddFilter(
@@ -290,7 +311,10 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             FilterOperator.Gte => query.Where($"{field} >= @v", new { v = value }),
             FilterOperator.Lt => query.Where($"{field} < @v", new { v = value }),
             FilterOperator.Lte => query.Where($"{field} <= @v", new { v = value }),
-            FilterOperator.Like => query.Where($"{field} LIKE @v", new { v = value }),
+            // SHARK-SEC-027: escape SQL LIKE wildcards (%, _, \) and use the
+            // backslash as the SQL ESCAPE character so wildcards supplied by
+            // an attacker match literally instead of expanding the scan set.
+            FilterOperator.Like => query.Where($"{field} LIKE @v ESCAPE '\\'", new { v = EscapeLike(value) }),
             FilterOperator.In => query.Where($"{field} IN (@v)", new { v = value.Split(',', StringSplitOptions.RemoveEmptyEntries) }),
             FilterOperator.Nin => query.Where($"{field} NOT IN (@v)", new { v = value.Split(',', StringSplitOptions.RemoveEmptyEntries) }),
             FilterOperator.Null => bool.TryParse(value, out var isNull) && isNull
@@ -299,6 +323,16 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             _ => query,
         };
     }
+
+    /// <summary>
+    /// Escapes SQL <c>LIKE</c> wildcards (<c>%</c>, <c>_</c>, <c>\</c>) in a
+    /// user-supplied filter value so they match literally when used with the
+    /// backslash <c>ESCAPE</c> clause in <see cref="ApplyOperator"/>. SHARK-SEC-027.
+    /// </summary>
+    private static string EscapeLike(string value)
+        => value.Replace(@"\", @"\\")
+                .Replace("%", @"\%")
+                .Replace("_", @"\_");
 
     private static ISugarQueryable<object> ApplySort(
         ISugarQueryable<object> query, string sortRaw, HashSet<string> validFields)
