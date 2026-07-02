@@ -41,6 +41,22 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     {
         _client = client;
         _options = options;
+        // SHARK-SEC-M005: validate pagination options at startup so a
+        // misconfigured DefaultPageSize/MaxPageSize cannot silently turn
+        // `totalPages = (int)Math.Ceiling((double)total / pageSize)` into
+        // NaN/Infinity and surface as an unhandled 500 on every list call.
+        if (_options.DefaultPageSize < 1)
+            throw new InvalidOperationException(
+                $"SqlSugarOptions.DefaultPageSize must be >= 1 (was {_options.DefaultPageSize}). " +
+                "Set opt.DefaultPageSize in AddSqlSugar (SHARK-SEC-M005).");
+        if (_options.MaxPageSize < 1)
+            throw new InvalidOperationException(
+                $"SqlSugarOptions.MaxPageSize must be >= 1 (was {_options.MaxPageSize}). " +
+                "Set opt.MaxPageSize in AddSqlSugar (SHARK-SEC-M005).");
+        if (_options.DefaultPageSize > _options.MaxPageSize)
+            throw new InvalidOperationException(
+                $"SqlSugarOptions.DefaultPageSize ({_options.DefaultPageSize}) must be <= MaxPageSize ({_options.MaxPageSize}) " +
+                "(SHARK-SEC-M005).");
     }
 
     private string SafeSoftDeleteField => IsValidFieldName(_options.SoftDeleteFieldName)
@@ -108,6 +124,11 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var page = int.TryParse(ctx.Request.Query["page"], out var p) && p > 0 ? p : 1;
                 var pageSize = int.TryParse(ctx.Request.Query["pageSize"], out var s) && s > 0
                     ? Math.Min(s, _options.MaxPageSize) : _options.DefaultPageSize;
+                // SHARK-SEC-M005: defensive clamp — even though the constructor
+                // validates DefaultPageSize/MaxPageSize >= 1, Math.Max(1, ...)
+                // keeps this method independently safe if it is ever moved or
+                // invoked outside the validated constructor path.
+                pageSize = Math.Max(1, pageSize);
 
                 // SHARK-SEC-025: bound `page` to prevent pagination DoS.
                 // (page - 1) * pageSize can overflow int.MaxValue with large page,
