@@ -63,8 +63,11 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
         // SHARK-SEC-006: explicit field allow-list for mass-assignment defense.
         // Only properties carrying [CrudAllow] are written from the JSON body; the
-        // primary key is excluded (URL-bound on PUT, DB-generated on POST).
-        var allowedWriteColumns = GetCrudAllowedColumns(entityType, pkName);
+        // primary key is excluded (URL-bound on PUT, DB-generated on POST), and the
+        // soft-delete column is excluded even if marked [CrudAllow] so attackers
+        // cannot revive soft-deleted rows by sending `IsDeleted = false`.
+        var softDeleteProp = GetSoftDeleteProperty(entityType);
+        var allowedWriteColumns = GetCrudAllowedColumns(entityType, pkName, softDeleteProp);
         var ignoredWriteColumns = GetIgnoredWriteColumns(entityType, pkName, allowedWriteColumns);
 
         if ((operations.HasFlag(CrudOperations.Create) || operations.HasFlag(CrudOperations.Update))
@@ -139,10 +142,11 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var body = await ctx.Request.ReadFromJsonAsync(entityType);
                 if (body == null)
                     return Results.BadRequest("Request body is required.");
-                await _client.InsertableByObject(body)
+                var identity = await _client.InsertableByObject(body)
                     .IgnoreColumns(ignoredWriteColumns)
-                    .ExecuteCommandAsync();
-                return Results.Ok(body);
+                    .ExecuteReturnIdentityAsync();
+                var saved = await ReadPersistedEntityAsync(entityType, tableName, pkName, body, identity);
+                return Results.Ok(saved ?? body);
             });
         }
 
@@ -153,11 +157,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var body = await ctx.Request.ReadFromJsonAsync(entityType);
                 if (body == null)
                     return Results.BadRequest("Request body is required.");
-                SetPrimaryKey(body, pkName, ConvertKey(id, entityType, pkName));
+                var pk = ConvertKey(id, entityType, pkName);
+                SetPrimaryKey(body, pkName, pk);
                 await _client.UpdateableByObject(body)
                     .UpdateColumns(allowedWriteColumns)
                     .ExecuteCommandAsync();
-                return Results.Ok(body);
+                var saved = await ReadEntityByPrimaryKeyAsync(entityType, tableName, pkName!, pk);
+                return Results.Ok(saved ?? body);
             });
         }
 
@@ -311,21 +317,93 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     }
 
     /// <summary>
-    /// Returns the C# property names of columns decorated with <see cref="CrudAllowAttribute"/>,
-    /// excluding the primary key. Used as the explicit allow-list for SqlSugar's
-    /// <c>UpdateColumns(...)</c> call on the PUT path (SHARK-SEC-006).
+    /// Re-reads the row persisted by the POST handler so the response reflects what is
+    /// actually in the database rather than the user-controlled request body. For
+    /// identity-keyed entities, the new ID comes from <c>ExecuteReturnIdentityAsync</c>;
+    /// for client-assigned keys (GUID, manual int, etc.) the body's PK value is used.
+    /// Returns <c>null</c> only when no primary key is configured (in which case the
+    /// caller falls back to returning the original body).
     /// </summary>
-    private static string[] GetCrudAllowedColumns(Type entityType, string? pkName)
+    private async Task<object?> ReadPersistedEntityAsync(
+        Type entityType, string tableName, string? pkName, object body, int identity)
+    {
+        if (pkName == null)
+            return null;
+        object pkValue;
+        if (identity > 0)
+        {
+            var pkProp = entityType.GetProperty(pkName)
+                ?? throw new InvalidOperationException(
+                    $"AutoCrud entity '{entityType.FullName}' has no property for primary key '{pkName}'.");
+            pkValue = Convert.ChangeType(identity, pkProp.PropertyType);
+        }
+        else
+        {
+            var pkProp = entityType.GetProperty(pkName);
+            pkValue = pkProp?.GetValue(body) ?? throw new InvalidOperationException(
+                $"AutoCrud POST returned no identity for '{entityType.FullName}' and the body has no '{pkName}' value to re-read.");
+        }
+        return await ReadEntityByPrimaryKeyAsync(entityType, tableName, pkName, pkValue);
+    }
+
+    /// <summary>
+    /// Reads a single row from <paramref name="tableName"/> by primary key. Returns
+    /// <c>null</c> when no row matches (e.g. PK points to a soft-deleted record while a
+    /// soft-delete filter is in effect on the read query).
+    /// </summary>
+    private async Task<object?> ReadEntityByPrimaryKeyAsync(
+        Type entityType, string tableName, string pkName, object pkValue)
+    {
+        var q = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
+        return await q.Where($"{pkName} = @id", new { id = pkValue }).FirstAsync();
+    }
+
+    /// <summary>
+    /// Returns the C# property names of columns decorated with <see cref="CrudAllowAttribute"/>,
+    /// excluding the primary key and the configured soft-delete column. Used as the explicit
+    /// allow-list for SqlSugar's <c>UpdateColumns(...)</c> call on the PUT path
+    /// (SHARK-SEC-006).
+    /// </summary>
+    /// <param name="softDeleteProp">
+    /// The entity property mapped to the soft-delete column, or <c>null</c> if the entity has
+    /// no such property. This property is excluded from the allow-list even if marked
+    /// <see cref="CrudAllowAttribute"/>, so an attacker cannot revive soft-deleted records by
+    /// sending <c>IsDeleted = false</c> in the PUT body.
+    /// </param>
+    private static string[] GetCrudAllowedColumns(
+        Type entityType, string? pkName, PropertyInfo? softDeleteProp)
     {
         var allowed = new List<string>();
         foreach (var prop in entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
             if (pkName != null && string.Equals(prop.Name, pkName, StringComparison.Ordinal))
                 continue;
+            if (softDeleteProp != null &&
+                string.Equals(prop.Name, softDeleteProp.Name, StringComparison.Ordinal))
+                continue;
             if (prop.GetCustomAttribute<CrudAllowAttribute>(inherit: true) != null)
                 allowed.Add(prop.Name);
         }
         return allowed.ToArray();
+    }
+
+    /// <summary>
+    /// Locates the C# property mapped to <see cref="SqlSugarOptions.SoftDeleteFieldName"/>.
+    /// Honors <see cref="SugarColumn.ColumnName"/> renames. Returns <c>null</c> when the
+    /// entity has no such property (e.g. non-soft-deletable entities).
+    /// </summary>
+    private PropertyInfo? GetSoftDeleteProperty(Type entityType)
+    {
+        var fieldName = SafeSoftDeleteField;
+        foreach (var prop in entityType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            var columnName = prop.GetCustomAttribute<SugarColumn>(inherit: true)?.ColumnName;
+            if (string.IsNullOrEmpty(columnName))
+                columnName = prop.Name;
+            if (string.Equals(columnName, fieldName, StringComparison.OrdinalIgnoreCase))
+                return prop;
+        }
+        return null;
     }
 
     /// <summary>
