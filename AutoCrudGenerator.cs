@@ -1,4 +1,5 @@
 using System.Reflection;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Options;
 using SqlSugar;
@@ -80,10 +81,21 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 $"endpoint (SHARK-SEC-006).");
         }
 
+        // SHARK-SEC-023: opt-in authorization. Auto-attach RequireAuthorization()
+        // to every CRUD endpoint when AutoCrudSqlSugar.AutoCrudRequireAuthorization
+        // is true. Defaults to false (backward compat). Production deployments
+        // MUST enable this — otherwise the auto-generated CRUD surface is
+        // anonymous, and combined with mass-assignment risk becomes unauthenticated
+        // data exposure / privilege escalation.
+        static IEndpointConventionBuilder RequireAuth(IEndpointConventionBuilder b)
+            => AutoCrudSqlSugar.AutoCrudRequireAuthorization
+                ? b.RequireAuthorization()
+                : b;
+
         // GET / — paginated list
         if (operations.HasFlag(CrudOperations.List))
         {
-            routes.MapGet("/", async (HttpContext ctx) =>
+            var b = routes.MapGet("/", async (HttpContext ctx) =>
             {
                 var page = int.TryParse(ctx.Request.Query["page"], out var p) && p > 0 ? p : 1;
                 var pageSize = int.TryParse(ctx.Request.Query["pageSize"], out var s) && s > 0
@@ -109,23 +121,25 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                     totalPages = (int)Math.Ceiling((double)total / pageSize),
                 });
             });
+            RequireAuth(b);
         }
 
         // GET /all — full-table dump (only when ListAll is explicitly enabled)
         if (operations.HasFlag(CrudOperations.ListAll))
         {
-            routes.MapGet("/all", async () =>
+            var b = routes.MapGet("/all", async () =>
             {
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 query = ApplySoftDeleteFilter(query, isSoftDeletable);
                 var all = await query.ToListAsync();
                 return Results.Ok(all);
             });
+            RequireAuth(b);
         }
 
         if (operations.HasFlag(CrudOperations.Get) && pkName != null)
         {
-            routes.MapGet($"{{{pkName}}}", async (string id) =>
+            var b = routes.MapGet($"{{{pkName}}}", async (string id) =>
             {
                 var pk = ConvertKey(id, entityType, pkName);
                 var q = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
@@ -133,11 +147,12 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var entity = await q.Where($"{pkName} = @id", new { id = pk }).FirstAsync();
                 return entity != null ? Results.Ok(entity) : Results.NotFound();
             });
+            RequireAuth(b);
         }
 
         if (operations.HasFlag(CrudOperations.Create))
         {
-            routes.MapPost("/", async (HttpContext ctx) =>
+            var b = routes.MapPost("/", async (HttpContext ctx) =>
             {
                 var body = await ctx.Request.ReadFromJsonAsync(entityType);
                 if (body == null)
@@ -148,11 +163,12 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var saved = await ReadPersistedEntityAsync(entityType, tableName, pkName, body, identity);
                 return Results.Ok(saved ?? body);
             });
+            RequireAuth(b);
         }
 
         if (operations.HasFlag(CrudOperations.Update) && pkName != null)
         {
-            routes.MapPut($"{{{pkName}}}", async (string id, HttpContext ctx) =>
+            var b = routes.MapPut($"{{{pkName}}}", async (string id, HttpContext ctx) =>
             {
                 var body = await ctx.Request.ReadFromJsonAsync(entityType);
                 if (body == null)
@@ -165,11 +181,12 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var saved = await ReadEntityByPrimaryKeyAsync(entityType, tableName, pkName!, pk);
                 return Results.Ok(saved ?? body);
             });
+            RequireAuth(b);
         }
 
         if (operations.HasFlag(CrudOperations.Delete) && pkName != null)
         {
-            routes.MapDelete($"{{{pkName}}}", async (string id) =>
+            var b = routes.MapDelete($"{{{pkName}}}", async (string id) =>
             {
                 var pk = ConvertKey(id, entityType, pkName);
                 if (isSoftDeletable)
@@ -185,6 +202,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 }
                 return Results.Ok();
             });
+            RequireAuth(b);
         }
     }
 
