@@ -167,6 +167,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         }
 
         // GET /all — full-table dump (only when ListAll is explicitly enabled)
+        // SHARK-SEC-L002: opting into `CrudOperations.ListAll` is a deliberate
+        // developer choice and is NOT enabled by the default `All` flag set.
+        // The /all endpoint materializes the entire table into a single JSON
+        // response — on a large table (Order with 100M+ rows) this can exhaust
+        // memory and stall the request thread. Use only for small reference
+        // tables (lookup data, country codes, etc.) and pair with
+        // AutoCrudRequireAuthorization.
         if (operations.HasFlag(CrudOperations.ListAll))
         {
             var b = routes.MapGet("/all", async () =>
