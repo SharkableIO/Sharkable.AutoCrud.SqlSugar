@@ -17,6 +17,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
     private const string DefaultSoftDeleteField = "IsDeleted";
 
+    // SHARK-SEC-L005: when SqlSugarOptions.SoftDeleteFieldName is invalid,
+    // SafeSoftDeleteField silently falls back to DefaultSoftDeleteField. Warn
+    // once per process so misconfigured deployments surface the substitution
+    // rather than letting the developer's entity-state filter quietly use the
+    // default column name.
+    private static int _softDeleteFallbackWarned;
+
     private static readonly Dictionary<string, FilterOperator> OperatorMap = new()
     {
         ["eq"] = FilterOperator.Eq,
@@ -61,7 +68,23 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
     private string SafeSoftDeleteField => IsValidFieldName(_options.SoftDeleteFieldName)
         ? _options.SoftDeleteFieldName!
-        : DefaultSoftDeleteField;
+        : WarnSoftDeleteFallback();
+
+    private string WarnSoftDeleteFallback()
+    {
+        // SHARK-SEC-L005: emit a one-time stderr warning per process so a
+        // misconfigured SoftDeleteFieldName (e.g. "is deleted" with a space)
+        // does not silently fall back to "IsDeleted" with no operator visibility.
+        if (Interlocked.Exchange(ref _softDeleteFallbackWarned, 1) == 0)
+        {
+            Console.Error.WriteLine(
+                $"[SHARK-SEC-L005] SqlSugarOptions.SoftDeleteFieldName '{_options.SoftDeleteFieldName}' " +
+                $"is invalid (must contain only letters, digits, or underscores); " +
+                $"falling back to '{DefaultSoftDeleteField}'. " +
+                "Set a valid value in AddSqlSugar(opt => ...) to silence this warning.");
+        }
+        return DefaultSoftDeleteField;
+    }
 
     private static bool IsValidFieldName(string? name)
         => !string.IsNullOrEmpty(name) && name.All(c => char.IsLetterOrDigit(c) || c == '_');
