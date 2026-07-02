@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SqlSugar;
 
@@ -23,6 +24,22 @@ public static class AutoCrudExtension
         });
         setupOption?.Invoke(option);
         StaticConfig.EnableAot = Shark.SharkOption.AotMode;
+
+        // SHARK-SEC-023: log a startup warning when generated CRUD endpoints will
+        // ship anonymous. Default false preserves backward compat, but production
+        // deployments MUST set AutoCrudSqlSugar.AutoCrudRequireAuthorization = true
+        // (opt-in flag) so every generated endpoint auto-attaches
+        // RequireAuthorization(). AOT apps don't need this — the reflection path
+        // that auto-discover routes is off, so routes only exist when the developer
+        // explicitly opted in.
+        if (!AutoCrudSqlSugar.AutoCrudRequireAuthorization && !Shark.SharkOption.AotMode)
+        {
+            var logger = services.BuildServiceProvider().GetService<ILoggerFactory>()
+                ?.CreateLogger("Sharkable.AutoCrud.SqlSugar.AddSqlSugar");
+            logger?.LogWarning(
+                "AutoCrudSqlSugar.AutoCrudRequireAuthorization is false — generated CRUD endpoints will be anonymous. " +
+                "Set AutoCrudSqlSugar.AutoCrudRequireAuthorization = true before deploying to production (SHARK-SEC-023).");
+        }
 
         var provider = services.BuildServiceProvider();
         var beforeCfg = provider.GetService<IOptions<ConnectionConfig>>()?.Value;
