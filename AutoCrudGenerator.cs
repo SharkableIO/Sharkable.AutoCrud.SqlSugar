@@ -38,9 +38,11 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         ["null"] = FilterOperator.Null,
     };
 
+    /// <summary>Creates a generator with default <see cref="SqlSugarOptions"/>.</summary>
     public AutoCrudGenerator(ISqlSugarClient client)
         : this(client, new SqlSugarOptions()) { }
 
+    /// <summary>Creates a generator with options from the DI container.</summary>
     public AutoCrudGenerator(ISqlSugarClient client, IOptions<SqlSugarOptions> options)
         : this(client, options.Value) { }
 
@@ -89,6 +91,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     private static bool IsValidFieldName(string? name)
         => !string.IsNullOrEmpty(name) && name.All(c => char.IsLetterOrDigit(c) || c == '_');
 
+    /// <summary>Generates CRUD routes for the given entity type and operations.</summary>
     public void GenerateRoutes(IEndpointRouteBuilder routes, Type entityType,
         Type endpointType, CrudOperations operations)
     {

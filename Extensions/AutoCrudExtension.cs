@@ -6,6 +6,7 @@ using SqlSugar;
 
 namespace Sharkable.AutoCrud.SqlSugar;
 
+/// <summary>Extension methods on <c>IServiceCollection</c> for registering SqlSugar-backed AutoCrud services.</summary>
 public static class AutoCrudExtension
 {
     /// <summary>

@@ -2,7 +2,7 @@ namespace Sharkable;
 
 /// <summary>
 /// Process-wide security configuration for the <c>Sharkable.AutoCrud.SqlSugar</c>
-/// plugin. Static properties are read by <see cref="AutoCrudGenerator"/> at the
+/// plugin. Static properties are read by <see cref="Sharkable.AutoCrud.SqlSugar.AutoCrudGenerator"/> at the
 /// time each entity's routes are generated (during startup). Configure them
 /// once, before <c>AddShark()</c> / <c>UseShark()</c> complete.
 /// </summary>
