@@ -180,13 +180,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var total = await query.Clone().CountAsync();
                 var items = await query.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
 
-                return Results.Ok(new
+                return Results.Ok(new PagedResult<object>
                 {
-                    items,
-                    total,
-                    page,
-                    pageSize,
-                    totalPages = (int)Math.Ceiling((double)total / pageSize),
+                    Items = items,
+                    Total = total,
+                    Page = page,
+                    PageSize = pageSize,
+                    TotalPages = (int)Math.Ceiling((double)total / pageSize),
                 });
             });
             RequireAuth(b);
