@@ -98,7 +98,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         if (operations == CrudOperations.None)
             return;
 
-        var tableName = entityType.Name;
+        var tableName = ResolveTableName(entityType);
         var pkName = GetPrimaryKeyName(entityType);
         var isSoftDeletable = entityType.GetInterfaces().Any(i => i.Name == "ISoftDeletable");
         var validFields = new HashSet<string>(entityType.GetProperties().Select(p => p.Name),
@@ -426,6 +426,12 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         }
         var idProp = entityType.GetProperty("Id");
         return idProp?.Name;
+    }
+
+    private static string ResolveTableName(Type entityType)
+    {
+        var tableAttr = entityType.GetCustomAttribute<SugarTable>(true);
+        return tableAttr?.TableName ?? entityType.Name;
     }
 
     private static object ConvertKey(string id, Type entityType, string pkName)
