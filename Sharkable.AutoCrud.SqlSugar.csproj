@@ -18,7 +18,7 @@
     <NoWarn>$(NoWarn);NU1903</NoWarn>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NuspecFile>Sharkable.AutoCrud.SqlSugar.nuspec</NuspecFile>
-    <NuspecProperties>version=0.7.5</NuspecProperties>
+    <NuspecProperties>version=0.8.0</NuspecProperties>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
@@ -31,7 +31,7 @@
     </When>
     <Otherwise>
       <ItemGroup>
-        <PackageReference Include="Sharkable" Version="0.7.5" />
+        <PackageReference Include="Sharkable" Version="0.8.0" />
       </ItemGroup>
     </Otherwise>
   </Choose>
