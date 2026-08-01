@@ -2,7 +2,7 @@
 
 All notable changes to Sharkable.AutoCrud.SqlSugar are documented here.
 
-## [Unreleased]
+## [0.8.0] — 2026-08-01
 
 ### feat
 - Multi-tenant row isolation (DATA-04): when `Sharkable.SharkOption.EnableAutoCrudTenantFilter` is enabled, all CRUD queries are filtered by the current tenant (`ITenant`), creates force-fill the tenant column server-side, the tenant column is excluded from client-controlled writes, and unresolved-tenant requests are rejected with 400. Tenant column name configurable via `SharkOption.AutoCrudTenantColumn` (default `TenantId`), validated as a SQL identifier at startup.
