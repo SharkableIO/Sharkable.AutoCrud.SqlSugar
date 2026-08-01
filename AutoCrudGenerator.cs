@@ -1,6 +1,7 @@
 using System.Reflection;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using SqlSugar;
 
@@ -121,6 +122,23 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         var allowedWriteColumns = GetCrudAllowedColumns(entityType, pkName, softDeleteProp, SafeSoftDeleteField);
         var ignoredWriteColumns = GetIgnoredWriteColumns(entityType, pkName, allowedWriteColumns);
 
+        // DATA-04: multi-tenant row isolation. When enabled, every query is
+        // filtered by the current tenant and the tenant column is force-filled
+        // on create / excluded from client-controlled writes.
+        var tenantColumn = ResolveTenantColumn();
+        if (tenantColumn.Length > 0)
+        {
+            allowedWriteColumns = allowedWriteColumns
+                .Where(c => !string.Equals(c, tenantColumn, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            // The tenant column is NOT client-writable, but it MUST be included
+            // in inserts (server-side value) — un-ignore it so the Create path
+            // actually persists the tenant id.
+            ignoredWriteColumns = ignoredWriteColumns
+                .Where(c => !string.Equals(c, tenantColumn, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        }
+
         if ((operations.HasFlag(CrudOperations.Create) || operations.HasFlag(CrudOperations.Update))
             && allowedWriteColumns.Length == 0)
         {
@@ -169,9 +187,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 query = ApplySoftDeleteFilter(query, isSoftDeletable);
+                query = ApplyTenantFilter(query, ctx.RequestServices, tenantColumn);
                 var (q, filterError) = ApplyFilters(query, ctx.Request.Query, validFields);
                 if (filterError != null) return Results.BadRequest(filterError);
                 query = q;
+
+                if (TenantMissing(ctx.RequestServices))
+                    return Results.BadRequest("Tenant could not be resolved for this request.");
 
                 var sortRaw = ctx.Request.Query["sort"].ToString();
                 if (!string.IsNullOrWhiteSpace(sortRaw))
@@ -202,10 +224,13 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
         // AutoCrudRequireAuthorization.
         if (operations.HasFlag(CrudOperations.ListAll))
         {
-            var b = routes.MapGet("/all", async () =>
+            var b = routes.MapGet("/all", async (HttpContext ctx) =>
             {
+                if (TenantMissing(ctx.RequestServices))
+                    return Results.BadRequest("Tenant could not be resolved for this request.");
                 var query = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 query = ApplySoftDeleteFilter(query, isSoftDeletable);
+                query = ApplyTenantFilter(query, ctx.RequestServices, tenantColumn);
                 var all = await query.ToListAsync();
                 return Results.Ok(all);
             });
@@ -214,11 +239,14 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
         if (operations.HasFlag(CrudOperations.Get) && pkName != null)
         {
-            var b = routes.MapGet($"{{{pkName}}}", async (string id) =>
+            var b = routes.MapGet($"{{{pkName}}}", async (string id, HttpContext ctx) =>
             {
+                if (TenantMissing(ctx.RequestServices))
+                    return Results.BadRequest("Tenant could not be resolved for this request.");
                 var pk = ConvertKey(id, entityType, pkName);
                 var q = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
                 q = ApplySoftDeleteFilter(q, isSoftDeletable);
+                q = ApplyTenantFilter(q, ctx.RequestServices, tenantColumn);
                 var entity = await q.Where($"{pkName} = @id", new { id = pk }).FirstAsync();
                 return entity != null ? Results.Ok(entity) : Results.NotFound();
             });
@@ -232,10 +260,19 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                 var body = await ctx.Request.ReadFromJsonAsync(entityType);
                 if (body == null)
                     return Results.BadRequest("Request body is required.");
+                // DATA-04: force the tenant column server-side — a client must
+                // never choose which tenant a new row belongs to.
+                var tenantId = ResolveTenantId(ctx.RequestServices);
+                if (tenantColumn.Length > 0)
+                {
+                    if (tenantId == null)
+                        return Results.BadRequest("Tenant could not be resolved for this request.");
+                    SetTenantOnEntity(body, entityType, tenantColumn, tenantId);
+                }
                 var identity = await _client.InsertableByObject(body)
                     .IgnoreColumns(ignoredWriteColumns)
                     .ExecuteReturnIdentityAsync();
-                var saved = await ReadPersistedEntityAsync(entityType, tableName, pkName, body, identity);
+                var saved = await ReadPersistedEntityAsync(entityType, tableName, pkName, body, identity, tenantColumn, ctx.RequestServices);
                 return Results.Ok(saved ?? body);
             });
             RequireAuth(b);
@@ -250,10 +287,36 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
                     return Results.BadRequest("Request body is required.");
                 var pk = ConvertKey(id, entityType, pkName);
                 SetPrimaryKey(body, pkName, pk);
+
+                // DATA-04: tenant-isolated update — the row must belong to the
+                // current tenant, otherwise treat it as not found (no existence leak).
+                // Only when isolation is enabled: with the feature disabled the
+                // behavior must stay byte-identical to the baseline (no pre-read,
+                // no extra DB round-trip, PUT to a missing id echoes the body).
+                if (tenantColumn.Length > 0)
+                {
+                    var tenantId = ResolveTenantId(ctx.RequestServices);
+                    if (tenantId == null)
+                        return Results.BadRequest("Tenant could not be resolved for this request.");
+                    var existing = await ReadEntityByPrimaryKeyAsync(
+                        entityType, tableName, pkName!, pk, tenantColumn, ctx.RequestServices);
+                    if (existing == null)
+                        return Results.NotFound();
+                }
+
+                // Note: SqlSugar's UpdateableByObject does not expose a
+                // parameterized Where(string, object) — the ownership check
+                // therefore relies on the tenant-scoped pre-read above (P3:
+                // residual check-then-act window is negligible because the
+                // tenant column is immutable and the pre-read just ran).
                 await _client.UpdateableByObject(body)
                     .UpdateColumns(allowedWriteColumns)
                     .ExecuteCommandAsync();
-                var saved = await ReadEntityByPrimaryKeyAsync(entityType, tableName, pkName!, pk);
+                var saved = tenantColumn.Length > 0
+                    ? await ReadEntityByPrimaryKeyAsync(
+                        entityType, tableName, pkName!, pk, tenantColumn, ctx.RequestServices)
+                    : await ReadEntityByPrimaryKeyAsync(
+                        entityType, tableName, pkName!, pk, string.Empty, ctx.RequestServices);
                 return Results.Ok(saved ?? body);
             });
             RequireAuth(b);
@@ -261,24 +324,126 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
 
         if (operations.HasFlag(CrudOperations.Delete) && pkName != null)
         {
-            var b = routes.MapDelete($"{{{pkName}}}", async (string id) =>
+            var b = routes.MapDelete($"{{{pkName}}}", async (string id, HttpContext ctx) =>
             {
+                // DATA-04: fail closed — with tenant isolation enabled and no
+                // resolved tenant, deletion must not fall through to an
+                // unscoped DELETE (cross-tenant row destruction).
+                if (TenantMissing(ctx.RequestServices))
+                    return Results.BadRequest("Tenant could not be resolved for this request.");
                 var pk = ConvertKey(id, entityType, pkName);
+                // DATA-04: tenant-scoped delete — the WHERE clause is tenant-filtered
+                // so a cross-tenant id cannot delete another tenant's row.
+                var tenantWhere = BuildTenantWhere(ctx.RequestServices, tenantColumn);
                 if (isSoftDeletable)
                 {
                     await _client.Ado.ExecuteCommandAsync(
-                        $"UPDATE {tableName} SET {SafeSoftDeleteField} = 1 WHERE {pkName} = @id",
-                        new { id = pk });
+                        $"UPDATE {tableName} SET {SafeSoftDeleteField} = 1 WHERE {pkName} = @id{tenantWhere}",
+                        tenantWhere.Length > 0
+                            ? new { id = pk, tenantId = ResolveTenantId(ctx.RequestServices) }
+                            : new { id = pk });
                 }
                 else
                 {
                     await _client.Deleteable<object>().AS(tableName)
-                        .Where($"{pkName} = @id", new { id = pk }).ExecuteCommandAsync();
+                        .Where($"{pkName} = @id{tenantWhere}",
+                            tenantWhere.Length > 0
+                                ? new { id = pk, tenantId = ResolveTenantId(ctx.RequestServices) }
+                                : new { id = pk })
+                        .ExecuteCommandAsync();
                 }
                 return Results.Ok();
             });
             RequireAuth(b);
         }
+    }
+
+    /// <summary>
+    /// Resolves and validates the tenant column when the AutoCrud tenant filter
+    /// is enabled (Sharkable.SharkOption.EnableAutoCrudTenantFilter). Throws at
+    /// endpoint-generation time (startup) when the configured column name is not
+    /// a valid SQL identifier — a hostile/mistyped column name would otherwise
+    /// become raw SQL interpolation on every request.
+    /// </summary>
+    private string ResolveTenantColumn()
+    {
+        if (!Shark.SharkOption.EnableAutoCrudTenantFilter)
+            return string.Empty;
+
+        var column = Shark.SharkOption.AutoCrudTenantColumn;
+        if (!IsValidFieldName(column))
+            throw new InvalidOperationException(
+                $"AutoCrudTenantColumn '{column}' is not a valid SQL identifier. " +
+                "Use only [A-Za-z_][A-Za-z0-9_]* characters (DATA-04).");
+
+        return column;
+    }
+
+    /// <summary>
+    /// Applies the tenant filter to a query when tenant isolation is enabled and
+    /// the current request has a resolved tenant. The column name is validated at
+    /// generation time (see <see cref="ResolveTenantColumn"/>), so the
+    /// interpolation below is safe. Callers must reject unresolved-tenant
+    /// requests via <see cref="TenantMissing"/> before querying — a null tenant
+    /// here deliberately yields an unfiltered query as a last line of defense
+    /// only after the handler-level 400 gate.
+    /// </summary>
+    private ISugarQueryable<object> ApplyTenantFilter(ISugarQueryable<object> query, IServiceProvider services, string tenantColumn)
+    {
+        if (tenantColumn.Length == 0)
+            return query;
+        var tenant = services.GetService<ITenant>();
+        if (tenant?.TenantId == null)
+            return query;
+        return query.Where($"{tenantColumn} = @tenantId", new { tenantId = tenant.TenantId });
+    }
+
+    /// <summary>
+    /// <c>true</c> when tenant isolation is enabled but the current request has
+    /// no resolved tenant — callers must return 400 in that case so a request
+    /// can never fall through to an unfiltered query (cross-tenant leak).
+    /// </summary>
+    private static bool TenantMissing(IServiceProvider services)
+    {
+        return Shark.SharkOption.EnableAutoCrudTenantFilter
+            && services.GetService<ITenant>()?.TenantId == null;
+    }
+
+    /// <summary>
+    /// Returns the current tenant id when tenant isolation is enabled, or <c>null</c>.
+    /// </summary>
+    private string? ResolveTenantId(IServiceProvider services)
+    {
+        if (!Shark.SharkOption.EnableAutoCrudTenantFilter)
+            return null;
+        return services.GetService<ITenant>()?.TenantId;
+    }
+
+    /// <summary>
+    /// Builds the tenant WHERE fragment (<c> AND TenantId = @tenantId</c>) for raw
+    /// SQL paths (soft/hard delete), or an empty string when isolation is off or
+    /// no tenant is resolved for this request. Column name was validated at
+    /// generation time, so the interpolation is safe.
+    /// </summary>
+    private static string BuildTenantWhere(IServiceProvider services, string tenantColumn)
+    {
+        if (tenantColumn.Length == 0)
+            return string.Empty;
+        var tenantId = services.GetService<ITenant>()?.TenantId;
+        return tenantId == null ? string.Empty : $" AND {tenantColumn} = @tenantId";
+    }
+
+    /// <summary>
+    /// Sets the tenant column value on a newly created entity via its property
+    /// (matched case-insensitively against the configured column name). No-op
+    /// when the entity has no such property — the column is expected on the
+    /// table; a missing property surfaces as a SQL error at insert time.
+    /// </summary>
+    private static void SetTenantOnEntity(object body, Type entityType, string tenantColumn, string tenantId)
+    {
+        var prop = entityType.GetProperties()
+            .FirstOrDefault(p => string.Equals(p.Name, tenantColumn, StringComparison.OrdinalIgnoreCase));
+        prop?.SetValue(body, tenantId);
     }
 
     private static (ISugarQueryable<object> Query, string? Error) ApplyFilters(
@@ -456,7 +621,7 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
     /// caller falls back to returning the original body).
     /// </summary>
     private async Task<object?> ReadPersistedEntityAsync(
-        Type entityType, string tableName, string? pkName, object body, int identity)
+        Type entityType, string tableName, string? pkName, object body, int identity, string tenantColumn, IServiceProvider services)
     {
         if (pkName == null)
             return null;
@@ -474,18 +639,20 @@ public sealed class AutoCrudGenerator : IAutoCrudGenerator
             pkValue = pkProp?.GetValue(body) ?? throw new InvalidOperationException(
                 $"AutoCrud POST returned no identity for '{entityType.FullName}' and the body has no '{pkName}' value to re-read.");
         }
-        return await ReadEntityByPrimaryKeyAsync(entityType, tableName, pkName, pkValue);
+        return await ReadEntityByPrimaryKeyAsync(entityType, tableName, pkName, pkValue, tenantColumn, services);
     }
 
     /// <summary>
     /// Reads a single row from <paramref name="tableName"/> by primary key. Returns
     /// <c>null</c> when no row matches (e.g. PK points to a soft-deleted record while a
-    /// soft-delete filter is in effect on the read query).
+    /// soft-delete filter is in effect on the read query, or the row belongs to another
+    /// tenant when tenant isolation is enabled).
     /// </summary>
     private async Task<object?> ReadEntityByPrimaryKeyAsync(
-        Type entityType, string tableName, string pkName, object pkValue)
+        Type entityType, string tableName, string pkName, object pkValue, string tenantColumn, IServiceProvider services)
     {
         var q = _client.Queryable<object>().AS(tableName).With(SqlWith.NoLock);
+        q = ApplyTenantFilter(q, services, tenantColumn);
         return await q.Where($"{pkName} = @id", new { id = pkValue }).FirstAsync();
     }
 
